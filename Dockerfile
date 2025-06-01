@@ -28,5 +28,5 @@ COPY vd_pipeline_refactored.py .
 # mount point declared for clarity
 VOLUME ["/data"]
 
-ENTRYPOINT ["python", "vd_pipeline_refactored.py"]
+ENTRYPOINT ["python", "main.py"]
 # you can still append CLI flags at `docker run` time

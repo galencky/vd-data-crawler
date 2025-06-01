@@ -25,6 +25,8 @@ import pandas as pd
 import pytz
 import requests
 from tqdm import tqdm
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from lxml import etree  # instead of xml.etree.ElementTree
 
 # Config (env-overridable for Docker)
 BASE_DIR = Path(os.getenv("BASE_DIR", "/data"))
@@ -103,28 +105,31 @@ def decompress_day(day_path: Path) -> Path:
     return dst
 
 # --- 3. XML → CSV ---
-def _parse_xml(path: Path) -> pd.DataFrame:
-    data: Dict[str, Dict[str, Dict[str, str]]] = {}
-    for _, elem in ET.iterparse(path, events=("end",)):
-        if elem.tag != f"{{{NAMESPACE['ns']}}}VDLive":
-            continue
-        vdid = elem.findtext("ns:VDID", default="", namespaces=NAMESPACE)
+def _parse_xml_lxml(path: Path) -> pd.DataFrame:
+    # C-accelerated lxml version; nearly identical logic
+    NAMESPACE = "http://traffic.transportdata.tw/standard/traffic/schema/"
+    NS = f"{{{NAMESPACE}}}"
+    data = {}
+    for _, elem in etree.iterparse(str(path), events=("end",), tag=f"{NS}VDLive"):
+        vdid_elem = elem.find(f"{NS}VDID")
+        vdid = vdid_elem.text if vdid_elem is not None else ""
         if not vdid:
-            elem.clear(); continue
+            elem.clear()
+            continue
         lanes = data.setdefault(vdid, {})
-        for lane in elem.findall(".//ns:Lane", NAMESPACE):
-            lane_id = lane.findtext("ns:LaneID", default="", namespaces=NAMESPACE)
+        for lane in elem.findall(f".//{NS}Lane"):
+            lane_id = lane.findtext(f"{NS}LaneID", default="")
             rec = lanes.setdefault(f"L{lane_id}", {})
-            rec["Speed"] = lane.findtext("ns:Speed", default="", namespaces=NAMESPACE)
-            rec["Occupancy"] = lane.findtext("ns:Occupancy", default="", namespaces=NAMESPACE)
-            for veh in lane.findall(".//ns:Vehicle", NAMESPACE):
-                vt = veh.findtext("ns:VehicleType", default="", namespaces=NAMESPACE)
+            rec["Speed"] = lane.findtext(f"{NS}Speed", default="")
+            rec["Occupancy"] = lane.findtext(f"{NS}Occupancy", default="")
+            for veh in lane.findall(f".//{NS}Vehicle"):
+                vt = veh.findtext(f"{NS}VehicleType", default="")
                 if not vt:
                     continue
-                rec[f"{vt}_Volume"] = veh.findtext("ns:Volume", default="", namespaces=NAMESPACE)
-                rec[f"{vt}_Vehicle_Speed"] = veh.findtext("ns:Speed", default="", namespaces=NAMESPACE)
+                rec[f"{vt}_Volume"] = veh.findtext(f"{NS}Volume", default="")
+                rec[f"{vt}_Vehicle_Speed"] = veh.findtext(f"{NS}Speed", default="")
         elem.clear()
-    rows: List[Dict[str, str]] = []
+    rows = []
     for vdid, lanes in data.items():
         row = {"VDID": vdid}
         for lane_id, kv in lanes.items():
@@ -133,11 +138,12 @@ def _parse_xml(path: Path) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 def xml_to_csv(day_folder: Path) -> Path:
+    from functools import partial
     src = day_folder / "decompressed"
     dst = ensure_dir(day_folder / "csv")
     xml_files = list(src.glob("*.xml"))
-    with ThreadPoolExecutor(MAX_PARSE_WORKERS) as ex, tqdm(total=len(xml_files), desc="XML→CSV") as bar:
-        fut_to_name = {ex.submit(_parse_xml, p): p.name for p in xml_files}
+    with ProcessPoolExecutor(MAX_PARSE_WORKERS) as ex, tqdm(total=len(xml_files), desc="XML→CSV") as bar:
+        fut_to_name = {ex.submit(_parse_xml_lxml, p): p.name for p in xml_files}
         for fut in as_completed(fut_to_name):
             df = fut.result()
             df.to_csv(dst / fut_to_name[fut].replace(".xml", ".csv"), index=False)
@@ -151,9 +157,12 @@ def split_by_vdid(csv_dir: Path) -> Path:
         (pd.read_csv(p).assign(file_name=p.name) for p in csv_dir.glob("*.csv")),
         ignore_index=True,
     )
-    for vdid, gdf in combined.groupby("VDID"):
-        gdf.to_csv(out_dir / f"{vdid}.csv", index=False)
-    del combined
+    groups = list(combined.groupby("VDID"))
+    with tqdm(total=len(groups), desc="Split VDID") as bar:
+        for vdid, gdf in groups:
+            gdf.to_csv(out_dir / f"{vdid}.csv", index=False)
+            bar.update(1)
+    del combined, groups
     gc.collect()
     return out_dir
 
