@@ -1,0 +1,38 @@
+# Byte-compiled / cache files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.db
+*.sqlite3
+
+# Virtual environments
+.venv/
+env/
+venv/
+ENV/
+
+# OS & Editor files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Test/output data
+output/
+data/
+.cache/
+logs/
+tmp/
+*.log
+
+# Large datasets (Kaggle, downloads)
+kaggle/
+input/
+*.zip
+*.gz
+
+# Git & CI files
+.git/
+.gitignore
+.dockerignore
