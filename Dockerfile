@@ -8,8 +8,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 # optional: configure defaults for the pipeline
 ENV BASE_DIR=/data \
     TIMEZONE=Asia/Taipei \
-    MAX_DL_WORKERS=8 \
-    MAX_PARSE_WORKERS=16
+    MAX_DL_WORKERS=2 \
+    MAX_PARSE_WORKERS=2
 
 # install minimal build deps, then purge apt cache
 RUN apt-get update \
@@ -23,7 +23,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # project code
-COPY vd_pipeline_refactored.py .
+COPY main.py .
 
 # mount point declared for clarity
 VOLUME ["/data"]
