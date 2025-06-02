@@ -6,7 +6,8 @@ Downloads, decompresses, parses, and splits VD XML archives for a given date/ran
 Usage (Docker):
     docker run --rm -v $(pwd)/data:/data my-vd-etl --date 20240530 --days 2 --zip
 
-Author: ChatGPT refactor, 2025-06-02
+Author: Kuan-Yuan Chen, 2025-06-02
+Assisted by ChatGPT
 """
 import argparse
 import gzip
@@ -29,7 +30,8 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from lxml import etree  # instead of xml.etree.ElementTree
 
 # Config (env-overridable for Docker)
-BASE_DIR = Path(os.getenv("BASE_DIR", "/data"))
+#BASE_DIR = Path(os.getenv("BASE_DIR", "/data")) # For Docker
+BASE_DIR = Path(os.getenv("BASE_DIR", "./output")) # For Windows
 TIMEZONE = os.getenv("TIMEZONE", "Asia/Taipei")
 MAX_DL_WORKERS = int(os.getenv("MAX_DL_WORKERS", 8))
 MAX_PARSE_WORKERS = int(os.getenv("MAX_PARSE_WORKERS", 16))
@@ -92,21 +94,29 @@ def download_day(date: str) -> Path:
     return base.parent  # /data/<date>
 
 # --- 2. Decompress ---
-def decompress_day(day_path: Path) -> Path:
-    logging.info(f"Step 2: Starting decompression for {day_path.name}")
+def decompress_day(day_path: Path, max_workers: int = 8) -> Path:
+    logging.info(f"Step 2: Starting parallel decompression for {day_path.name}")
     src = day_path / "compressed"
     dst = ensure_dir(day_path / "decompressed")
     gz_files = list(src.glob("*.xml.gz"))
     if not gz_files:
         logging.warning(f"No .gz files found for decompression in {src}")
-    for gz in tqdm(gz_files, desc="Decompress"):
+        return dst
+
+    def _decompress_one(gz: Path):
         out = dst / gz.with_suffix("").name
-        if out.exists(): continue
+        if out.exists():
+            return
         try:
             with gzip.open(gz, "rb") as fin, out.open("wb") as fout:
                 shutil.copyfileobj(fin, fout)
         except Exception as exc:
             logging.warning("Decompress error %s – %s", gz.name, exc)
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor, tqdm(total=len(gz_files), desc="Decompress") as bar:
+        futures = [executor.submit(_decompress_one, gz) for gz in gz_files]
+        for _ in as_completed(futures):
+            bar.update(1)
     logging.info(f"Step 2: Decompression finished for {day_path.name}")
     return dst
 
@@ -162,15 +172,23 @@ def xml_to_csv(day_folder: Path) -> Path:
 def split_by_vdid(csv_dir: Path) -> Path:
     logging.info(f"Step 4: Splitting combined CSV by VDID for {csv_dir.parent.name}")
     out_dir = ensure_dir(csv_dir.parent / "VDID")
-    combined = pd.concat(
-        (pd.read_csv(p).assign(file_name=p.name) for p in csv_dir.glob("*.csv")),
-        ignore_index=True,
-    )
+    csv_files = list(csv_dir.glob("*.csv"))
+    
+    # Progress bar for reading CSVs
+    dfs = []
+    with tqdm(total=len(csv_files), desc="Read CSVs") as read_bar:
+        for p in csv_files:
+            dfs.append(pd.read_csv(p).assign(file_name=p.name))
+            read_bar.update(1)
+    combined = pd.concat(dfs, ignore_index=True)
+    del dfs  # Free memory
+
+    # Progress bar for splitting by VDID
     groups = list(combined.groupby("VDID"))
-    with tqdm(total=len(groups), desc="Split VDID") as bar:
+    with tqdm(total=len(groups), desc="Split VDID") as split_bar:
         for vdid, gdf in groups:
             gdf.to_csv(out_dir / f"{vdid}.csv", index=False)
-            bar.update(1)
+            split_bar.update(1)
     del combined, groups
     gc.collect()
     logging.info(f"Step 4: VDID splitting finished for {csv_dir.parent.name}")
