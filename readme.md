@@ -1,7 +1,9 @@
 # Taiwan Freeway VD Data ETL Pipeline
 
 **Author:** Kuan-Yuan Chen, Tzu-Chi Huang
+
 **Assisted by:** ChatGPT o3
+
 **Last updated:** 2025-06-02
 
 ![Docker Ready](https://img.shields.io/badge/docker-ready-blue)
